@@ -1,0 +1,200 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.autograd import Variable
+from utils import init_util
+
+class VoxRex(nn.Module):
+    def __init__(self, in_channels):
+        super(VoxRex, self).__init__()
+        self.block = nn.Sequential(
+            nn.BatchNorm3d(in_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm3d(in_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(in_channels, in_channels, kernel_size=3, padding=1, bias=False)
+            )
+
+    def forward(self, x):
+        return self.block(x)+x
+
+class VoxResNet(nn.Module):
+    ''' base backend '''
+    def __init__(self, in_channels, num_classes, ftrlen=[32,64,64,64]):
+        super(VoxResNet, self).__init__()
+        ftr1,ftr2,ftr3,ftr4 = ftrlen
+        # stage 1
+        self.conv1_1 = nn.Sequential(
+            nn.Conv3d(in_channels, ftr1, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm3d(ftr1),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(ftr1, ftr1, kernel_size=3, padding=1, bias=False)
+            )
+        # stage 2
+        self.conv1_2 = nn.Sequential(
+            nn.BatchNorm3d(ftr1),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(ftr1, ftr2, kernel_size=3, stride=(1,2,2), padding=1, bias=True)
+            )
+        self.voxres2 = VoxRex(ftr2)
+        self.voxres3 = VoxRex(ftr2)
+        # stage 3
+        self.conv4 = nn.Sequential(
+            nn.BatchNorm3d(ftr2),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(ftr2, ftr3, kernel_size=3, stride=(1,2,2), padding=1, bias=True)
+            )
+        self.voxres5 = VoxRex(ftr3)
+        self.voxres6 = VoxRex(ftr3)
+        # stage 4
+        self.conv7 = nn.Sequential(
+            nn.BatchNorm3d(ftr3),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(ftr3, ftr4, kernel_size=3, stride=(1,2,2), padding=1, bias=True)
+            )
+
+        self.voxres8 = VoxRex(ftr4)
+        self.voxres9 = VoxRex(ftr4)
+
+
+    def forward(self, x):
+        h1 = self.foward_stage1(x)
+        h2 = self.foward_stage2(h1)
+        h3 = self.foward_stage3(h2)
+        h4 = self.foward_stage4(h3)
+        return h4
+
+    def foward_stage1(self, x):
+        h = self.conv1_1(x)
+        return h
+
+    def foward_stage2(self, x):
+        h = self.conv1_2(x)
+        h = self.voxres2(h)
+        h = self.voxres3(h)
+        return h
+
+    def foward_stage3(self, x):
+        h = self.conv4(x)
+        h = self.voxres5(h)
+        h = self.voxres6(h)
+        return h
+
+    def foward_stage4(self, x):
+        h = self.conv7(x)
+        h = self.voxres8(h)
+        h = self.voxres9(h)
+        return h
+
+class VoxResNet_V0(VoxResNet):
+    def __init__(self, in_channels, num_classes):
+        super(VoxResNet_V0, self).__init__(in_channels, num_classes)
+        self.head_c1 = nn.Conv3d(32, num_classes, kernel_size=1, bias=True)
+        self.head_c2 = nn.Sequential(
+            nn.ConvTranspose3d(64, 32, kernel_size=(1,2,2), stride=(1,2,2), bias=False),
+            nn.BatchNorm3d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(32, num_classes, kernel_size=1, bias=True)
+            )
+        self.head_c3 = nn.Sequential(
+            nn.ConvTranspose3d(64, 64, kernel_size=(1,2,2), stride=(1,2,2), bias=False),
+            nn.BatchNorm3d(64),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose3d(64, 32, kernel_size=(1,2,2), stride=(1,2,2), bias=False),
+            nn.BatchNorm3d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(32, num_classes, kernel_size=1, bias=True)
+            )
+        self.head_c4 = nn.Sequential(
+            nn.ConvTranspose3d(64, 64, kernel_size=(1,2,2), stride=(1,2,2), bias=False),
+            nn.BatchNorm3d(64),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose3d(64, 64, kernel_size=(1,2,2), stride=(1,2,2), bias=False),
+            nn.BatchNorm3d(64),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose3d(64, 32, kernel_size=(1,2,2), stride=(1,2,2), bias=False),
+            nn.BatchNorm3d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(32, num_classes, kernel_size=1, bias=True)
+            )
+
+    def forward(self, x):
+        h1 = self.foward_stage1(x)
+        h2 = self.foward_stage2(h1)
+        h3 = self.foward_stage3(h2)
+        h4 = self.foward_stage4(h3)
+
+        c1 = self.head_c1(h1)
+        c2 = self.head_c2(h2)
+        c3 = self.head_c3(h3)
+        c4 = self.head_c4(h4)
+
+        out_x = nn.Softmax(1)(c1+c2+c3+c4)
+
+        return out_x
+
+class VoxResNet_V1(VoxResNet):
+    def __init__(self, in_channels, num_classes):
+        super(VoxResNet_V1, self).__init__(in_channels, num_classes)
+        self.head1 = nn.Sequential(
+            nn.Conv3d(32, 64, kernel_size=3, padding=1, bias=True),
+            nn.BatchNorm3d(64)
+            )
+        self.head2 = nn.Sequential(
+            nn.Conv3d(64, 64, kernel_size=3, padding=1, bias=True),
+            nn.ReLU(inplace=True)
+            )
+        self.upsample1 = nn.Sequential(
+            nn.ConvTranspose3d(64, 64, kernel_size=(1,2,2), stride=(1,2,2), bias=False),
+            nn.BatchNorm3d(64)
+            )
+
+        self.upsample2 = nn.Sequential(
+            nn.ConvTranspose3d(64, 64, kernel_size=(1,2,2), stride=(1,2,2), bias=False),
+            nn.BatchNorm3d(64)
+            )
+
+        self.upsample3 = nn.Sequential(
+            nn.ConvTranspose3d(64, 64, kernel_size=(1,2,2), stride=(1,2,2), bias=False),
+            nn.BatchNorm3d(64)
+            )
+
+        self.predict = nn.Conv3d(64, num_classes, kernel_size=1, bias=True)
+
+    def forward(self, x):
+        h1 = self.foward_stage1(x)
+        h2 = self.foward_stage2(h1)
+        h3 = self.foward_stage3(h2)
+        h4 = self.foward_stage4(h3)
+
+        f1 = self.upsample1(h4)
+        f2 = self.upsample2(f1+h3)
+        f3 = self.upsample3(f2+h2)
+
+        h1 = self.head1(h1)
+        f4 = self.head2(f3+h1)
+        c = self.predict(f4)
+        return c
+
+
+
+if __name__ == '__main__':
+    import torch
+    from torch.autograd import Variable
+
+    img = Variable(torch.randn(4, 1, 32, 32, 32))
+    print(img.shape)
+    # inputs = [img,img2,img3]
+    # # inputs = tuple(inputs)
+    net = VoxResNet_V0(1, 2)
+    init_util.print_network(net)
+    outx = net(img)
+    print(outx.size())
+
+
+
+
+
+
+
